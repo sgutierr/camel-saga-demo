@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-2.0.xsd        http://camel.apache.org/schema/spring      https://camel.apache.org/schema/spring/camel-spring.xsd http://activemq.apache.org/schema/core http://activemq.apache.org/schema/core/activemq-core.xsd">
+    <bean class="org.apache.camel.impl.saga.InMemorySagaService"
+        destroy-method="doStop" id="sagaService" init-method="doStart"/>
+    <bean class="org.apache.activemq.ActiveMQConnectionFactory" id="activemq">
+        <property name="brokerURL" value="tcp://artemis-broker-artemis-0-svc:61616"/>
+    </bean>
+    <camelContext id="camel" xmlns="http://camel.apache.org/schema/spring">
+        <route id="Order-Service">
+            <from id="_to1" uri="netty-http:http://0.0.0.0:8080/orders/neworder"/>
+            <bean beanType="org.mycompany.OrderService" cache="false"
+                id="CreateOrder" method="CreateOrder()"/>
+            <log id="route-log" message="Order Created ${body}"/>
+            <to id="_toamq" pattern="InOnly" uri="activemq:queue:operations.order"/>
+            <to id="_to6amq" pattern="InOnly" uri="activemq:queue:payment.order"/>
+            <to id="_to5" uri="direct:orchestrator"/>
+        </route>
+        <route id="Order-SAGA-Orchestrator">
+            <from id="direct-buy" uri="direct:orchestrator"/>
+            <saga id="_saga1">
+                <to id="_to3" uri="direct:newOrder"/>
+                <to id="_to4" uri="direct:reserveCredit"/>
+            </saga>
+            <choice id="_choice1">
+                <when id="_when1">
+                    <simple>${body} == 'fail'</simple>
+                    <throwException
+                        exceptionType="java.lang.RuntimeException"
+                        id="_throwException1" message="fail"/>
+                </when>
+            </choice>
+            <to id="_to2" uri="mock:end"/>
+        </route>
+        <route id="New-Order">
+            <from id="_from2" uri="direct:newOrder"/>
+            <saga id="_saga2">
+                <compensation uri="direct:cancelOrder"/>
+                <completion uri="direct:completeOrder"/>
+            </saga>
+            <log id="_completeOrder" message="Order ${body} created"/>
+            <to id="_tonord" uri="mock:end"/>
+        </route>
+        <route id="Reserve-Credit">
+            <from id="_from1" uri="direct:reserveCredit"/>
+            <log id="_log1" message="Order reserve ${body} booked"/>
+            <to id="_tomockcredit" uri="mock:end"/>
+        </route>
+        <route id="Cancel-Order">
+            <from id="_from3" uri="direct:cancelOrder"/>
+            <to id="_tocompensationamq" pattern="InOnly" uri="activemq:queue:compensation.order"/>
+            <log id="_log2" message="Order  ${body} cancelled"/>
+        </route>
+        <route id="Complete-Order">
+            <from id="_from4" uri="direct:completeOrder"/>
+            <to id="_to6" uri="http://echo-api.3scale.net"/>
+            <log id="_log3" message="Order  ${body} finish"/>
+        </route>
+        <route id="_routehealth">
+            <from id="_fromhealth" uri="netty-http:http://0.0.0.0:8080/actuator/health"/>
+            <to id="_tohealth" uri="mock:end"/>
+        </route>
+    </camelContext>
+</beans>
